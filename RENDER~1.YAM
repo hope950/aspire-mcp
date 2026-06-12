@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: aspire-mcp
+    env: node
+    region: oregon
+    plan: starter          # $7/month — always-on (recommended)
+    # plan: free           # Free tier — sleeps after 15 min, 30s cold start
+    buildCommand: npm install
+    startCommand: node server.js
+    healthCheckPath: /health
+    envVars:
+      - key: ASPIRE_CLIENT_ID
+        sync: false        # You will enter this manually in the Render dashboard
+      - key: ASPIRE_SECRET
+        sync: false        # You will enter this manually in the Render dashboard
+      - key: NODE_ENV
+        value: production

@@ -1,0 +1,18 @@
+{
+  "name": "aspire-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for Aspire business management software",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "express": "^4.19.2",
+    "zod": "^3.23.8"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
