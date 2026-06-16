@@ -9,6 +9,7 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import express from "express";
 import { z } from "zod";
@@ -927,9 +928,34 @@ app.delete("/mcp", async (req, res) => {
   res.status(200).end();
 });
 
+// ─── SSE TRANSPORT (for mcp-remote / Claude Desktop compatibility) ───────────
+
+const sseSessions = {};
+
+app.get("/sse", async (req, res) => {
+  const transport = new SSEServerTransport("/messages", res);
+  sseSessions[transport.sessionId] = transport;
+  transport.onclose = () => { delete sseSessions[transport.sessionId]; };
+  const srv = buildServer();
+  await srv.connect(transport);
+  await transport.start();
+  console.log(`SSE session started: ${transport.sessionId}`);
+});
+
+app.post("/messages", async (req, res) => {
+  const sessionId = req.query.sessionId;
+  const transport = sseSessions[sessionId];
+  if (!transport) {
+    res.status(400).json({ error: "Invalid or expired SSE session" });
+    return;
+  }
+  await transport.handlePostMessage(req, res);
+});
+
 // Start server
 app.listen(PORT, () => {
   console.log(`Aspire MCP server listening on port ${PORT}`);
   console.log(`Health check: http://localhost:${PORT}/health`);
-  console.log(`MCP endpoint: http://localhost:${PORT}/mcp`);
+  console.log(`SSE endpoint:  http://localhost:${PORT}/sse`);
+  console.log(`MCP endpoint:  http://localhost:${PORT}/mcp`);
 });
