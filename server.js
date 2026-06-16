@@ -938,7 +938,6 @@ app.get("/sse", async (req, res) => {
   transport.onclose = () => { delete sseSessions[transport.sessionId]; };
   const srv = buildServer();
   await srv.connect(transport);
-  await transport.start();
   console.log(`SSE session started: ${transport.sessionId}`);
 });
 
