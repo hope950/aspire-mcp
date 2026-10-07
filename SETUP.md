@@ -78,6 +78,22 @@ Your API credentials are entered here — not in the code — so they stay priva
 4. Click **Save Changes**
 5. Render will automatically restart the server with the new credentials
 
+### Lock the server with an access key (strongly recommended)
+
+Without this, anyone who finds your server URL can read and change your Aspire data.
+
+1. Make a long random key (at least 32 characters, letters and numbers only)
+2. In Render, add one more environment variable:
+
+   | Key | Value |
+   |-----|-------|
+   | `MCP_ACCESS_KEY` | *(your random key)* |
+
+3. From then on, every connection must include the key. The easiest way is in the URL:
+   `https://aspire-mcp.onrender.com/k/YOUR_KEY/mcp`
+   Connections that support headers can instead send `Authorization: Bearer YOUR_KEY`.
+4. Treat that URL like a password. Don't share it or paste it anywhere public.
+
 ---
 
 ## Step 4 — Copy your server URL

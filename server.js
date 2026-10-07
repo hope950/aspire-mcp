@@ -5,6 +5,12 @@
  * Required environment variables:
  *   ASPIRE_CLIENT_ID  — your Aspire API Client ID
  *   ASPIRE_SECRET     — your Aspire API Secret
+ *
+ * Optional (strongly recommended):
+ *   MCP_ACCESS_KEY    — a long random secret. When set, every MCP request must
+ *                       present it, either in the URL as /k/<key>/mcp or as an
+ *                       "Authorization: Bearer <key>" or "x-api-key" header.
+ *                       When not set, the server stays open (old behavior).
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -13,7 +19,7 @@ import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import express from "express";
 import { z } from "zod";
-import { randomUUID } from "crypto";
+import { randomUUID, timingSafeEqual } from "crypto";
 
 // ─── CONFIG ──────────────────────────────────────────────────────────────────
 
@@ -21,6 +27,7 @@ const ASPIRE_BASE = "https://cloud-api.youraspire.com";
 const CLIENT_ID = process.env.ASPIRE_CLIENT_ID;
 const SECRET = process.env.ASPIRE_SECRET;
 const PORT = process.env.PORT || 3000;
+const ACCESS_KEY = (process.env.MCP_ACCESS_KEY || "").trim();
 
 if (!CLIENT_ID || !SECRET) {
   console.error("ERROR: ASPIRE_CLIENT_ID and ASPIRE_SECRET environment variables are required.");
@@ -860,11 +867,47 @@ app.get("/health", (_req, res) => {
   res.json({ status: "ok", service: "aspire-mcp", timestamp: new Date().toISOString() });
 });
 
+// ─── ACCESS KEY CHECK ────────────────────────────────────────────────────────
+
+function keyMatches(given) {
+  if (!ACCESS_KEY) return true;
+  if (typeof given !== "string" || !given) return false;
+  const a = Buffer.from(given.trim());
+  const b = Buffer.from(ACCESS_KEY);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+function keyFromHeaders(req) {
+  const auth = req.headers["authorization"] || "";
+  if (auth.toLowerCase().startsWith("bearer ")) return auth.slice(7);
+  return req.headers["x-api-key"];
+}
+
+function denied(res) {
+  res.status(401).json({ error: "Unauthorized: missing or invalid access key" });
+}
+
+// Key in the URL path: /k/<key>/mcp
+function requirePathKey(req, res, next) {
+  if (keyMatches(req.params.key)) return next();
+  return denied(res);
+}
+
+// Key in a header: Authorization: Bearer <key>, or x-api-key: <key>
+function requireHeaderKey(req, res, next) {
+  if (keyMatches(keyFromHeaders(req))) return next();
+  return denied(res);
+}
+
+// ─── MCP ROUTES ──────────────────────────────────────────────────────────────
+
+const mcp = express.Router();
+
 // Session store for stateful MCP connections
 const sessions = {};
 
 // MCP endpoint — handles POST (new sessions and messages) + GET (SSE streaming) + DELETE
-app.post("/mcp", async (req, res) => {
+mcp.post("/mcp", async (req, res) => {
   const sessionId = req.headers["mcp-session-id"];
 
   try {
@@ -902,7 +945,7 @@ app.post("/mcp", async (req, res) => {
   }
 });
 
-app.get("/mcp", async (req, res) => {
+mcp.get("/mcp", async (req, res) => {
   const sessionId = req.headers["mcp-session-id"];
   if (!sessionId || !sessions[sessionId]) {
     res.status(400).json({ error: "Invalid or missing session ID" });
@@ -916,7 +959,7 @@ app.get("/mcp", async (req, res) => {
   }
 });
 
-app.delete("/mcp", async (req, res) => {
+mcp.delete("/mcp", async (req, res) => {
   const sessionId = req.headers["mcp-session-id"];
   if (sessionId && sessions[sessionId]) {
     try {
@@ -932,8 +975,8 @@ app.delete("/mcp", async (req, res) => {
 
 const sseSessions = {};
 
-app.get("/sse", async (req, res) => {
-  const transport = new SSEServerTransport("/messages", res);
+mcp.get("/sse", async (req, res) => {
+  const transport = new SSEServerTransport(`${req.baseUrl}/messages`, res);
   sseSessions[transport.sessionId] = transport;
   transport.onclose = () => { delete sseSessions[transport.sessionId]; };
   const srv = buildServer();
@@ -941,7 +984,7 @@ app.get("/sse", async (req, res) => {
   console.log(`SSE session started: ${transport.sessionId}`);
 });
 
-app.post("/messages", async (req, res) => {
+mcp.post("/messages", async (req, res) => {
   const sessionId = req.query.sessionId;
   const transport = sseSessions[sessionId];
   if (!transport) {
@@ -951,10 +994,17 @@ app.post("/messages", async (req, res) => {
   await transport.handlePostMessage(req, res);
 });
 
+// Key in the path is checked first, then the header form for everything else.
+app.use("/k/:key", requirePathKey, mcp);
+app.use(requireHeaderKey, mcp);
+
 // Start server
 app.listen(PORT, () => {
   console.log(`Aspire MCP server listening on port ${PORT}`);
   console.log(`Health check: http://localhost:${PORT}/health`);
   console.log(`SSE endpoint:  http://localhost:${PORT}/sse`);
   console.log(`MCP endpoint:  http://localhost:${PORT}/mcp`);
+  console.log(ACCESS_KEY
+    ? "Access key: REQUIRED (MCP_ACCESS_KEY is set)"
+    : "Access key: NOT SET, server is open to anyone with the URL");
 });
