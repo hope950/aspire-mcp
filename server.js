@@ -20,6 +20,7 @@ import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import express from "express";
 import { z } from "zod";
 import { randomUUID, timingSafeEqual } from "crypto";
+import { registerReportTool } from "./report.js";
 
 // ─── CONFIG ──────────────────────────────────────────────────────────────────
 
@@ -853,6 +854,8 @@ function buildServer() {
       } catch (e) { return fail(e); }
     }
   );
+
+  registerReportTool(server, apiGet, fail);
 
   return server;
 }
