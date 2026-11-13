@@ -19,10 +19,31 @@ import { z } from "zod";
 
 const PAGE = 500;
 const CHUNK = 15; // Aspire rejects filters over 100 OData nodes
-const PARALLEL = 6;
+const PARALLEL = 3;
+const MIN_GAP_MS = 250; // about 4 requests per second, well under Aspire's 20 per second account limit
 
 const round2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
 const dateOnly = (d) => (d ? String(d).slice(0, 10) : null);
+
+// Paces every Aspire call and retries politely when Aspire answers 429.
+function paced(apiGet) {
+  let nextSlot = 0;
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  return async function (path, params) {
+    for (let attempt = 0; ; attempt++) {
+      const now = Date.now();
+      const wait = Math.max(0, nextSlot - now);
+      nextSlot = Math.max(now, nextSlot) + MIN_GAP_MS;
+      if (wait) await sleep(wait);
+      try {
+        return await apiGet(path, params);
+      } catch (e) {
+        if (!/\b429\b/.test(String(e.message)) || attempt >= 6) throw e;
+        await sleep(2000 * 2 ** attempt); // 2s, 4s, 8s, 16s, 32s, 64s
+      }
+    }
+  };
+}
 
 async function getAll(apiGet, path, params) {
   const out = [];
@@ -54,7 +75,8 @@ async function inChunks(ids, fn) {
 
 const orEq = (field, ids) => "(" + ids.map((id) => `${field} eq ${id}`).join(" or ") + ")";
 
-export function registerReportTool(server, apiGet, fail) {
+export function registerReportTool(server, rawApiGet, fail) {
+  let apiGet = rawApiGet;
   server.tool(
     "route_revenue_hours_report",
     `Year to date (or any period) report for a set of routes (trucks): invoiced revenue
@@ -72,6 +94,7 @@ export function registerReportTool(server, apiGet, fail) {
     },
     async ({ routeIds, startDate, endDate, divisions }) => {
       try {
+        apiGet = paced(rawApiGet);
         const started = Date.now();
         const divs = new Set(divisions && divisions.length ? divisions : ["Design Build", "Enhancement"]);
         const chosen = new Set(routeIds);
