@@ -75,6 +75,8 @@ async function inChunks(ids, fn) {
 
 const orEq = (field, ids) => "(" + ids.map((id) => `${field} eq ${id}`).join(" or ") + ")";
 
+const jobs = new Map();
+
 export function registerReportTool(server, rawApiGet, fail) {
   let apiGet = rawApiGet;
   server.tool(
@@ -92,8 +94,40 @@ export function registerReportTool(server, rawApiGet, fail) {
         .optional()
         .describe("Divisions whose invoices form the tie out universe. Default Design Build and Enhancement"),
     },
-    async ({ routeIds, startDate, endDate, divisions }) => {
-      try {
+    async (args) => {
+      // Reports take a few minutes, longer than a client will wait. The first call
+      // starts a background job; calling again with the same inputs returns its
+      // progress, then the finished result (kept for 30 minutes).
+      const key = JSON.stringify([args.routeIds, args.startDate, args.endDate, args.divisions || null]);
+      const now = Date.now();
+      for (const [k, j] of jobs) if (now - j.startedAt > 30 * 60 * 1000) jobs.delete(k);
+      let job = jobs.get(key);
+      if (!job || job.status === "error") {
+        job = { status: "running", startedAt: now, progress: "starting" };
+        job.promise = compute(args, job)
+          .then((text) => { job.status = "done"; job.text = text; })
+          .catch((e) => { job.status = "error"; job.error = e.message; console.error("Report error:", e.message); });
+        jobs.set(key, job);
+      }
+      await Promise.race([job.promise, new Promise((r) => setTimeout(r, 45000))]);
+      if (job.status === "done") return { content: [{ type: "text", text: job.text }] };
+      if (job.status === "error") return fail(new Error(job.error));
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            status: "running",
+            progress: job.progress,
+            runningSeconds: Math.round((Date.now() - job.startedAt) / 1000),
+            next: "Call this tool again with exactly the same inputs in about a minute to get the result.",
+          }),
+        }],
+      };
+    },
+  );
+
+  async function compute({ routeIds, startDate, endDate, divisions }, job) {
+      {
         apiGet = paced(rawApiGet);
         const started = Date.now();
         const divs = new Set(divisions && divisions.length ? divisions : ["Design Build", "Enhancement"]);
@@ -106,6 +140,7 @@ export function registerReportTool(server, rawApiGet, fail) {
         });
         const routeById = new Map(routes.map((r) => [r.RouteID, r]));
 
+        job.progress = "time entries on chosen routes";
         // 2. Time entries on the chosen routes in the period.
         const chosenTimes = await getAll(apiGet, "/WorkTicketTimes", {
           $filter: `${dateFilter} and ${orEq("RouteID", routeIds)}`,
@@ -113,6 +148,7 @@ export function registerReportTool(server, rawApiGet, fail) {
         });
         const chosenTicketIds = new Set(chosenTimes.map((t) => t.WorkTicketID));
 
+        job.progress = "tickets";
         // 3. Those tickets, to learn their jobs.
         const ticketSelect =
           "WorkTicketID,WorkTicketNumber,OpportunityID,OpportunityNumber,HoursEst,HoursAct,WorkTicketStatusName";
@@ -121,6 +157,7 @@ export function registerReportTool(server, rawApiGet, fail) {
         );
         const oppIds = new Set(firstTickets.map((t) => t.OpportunityID).filter(Boolean));
 
+        job.progress = "all tickets and time on those jobs";
         // 4. Every ticket on those jobs, and every route's time on them in the period.
         const allTickets = await inChunks(oppIds, (ids) =>
           getAll(apiGet, "/WorkTickets", { $filter: orEq("OpportunityID", ids), $select: ticketSelect }),
@@ -138,6 +175,7 @@ export function registerReportTool(server, rawApiGet, fail) {
         const timeById = new Map();
         for (const t of [...allTimes, ...chosenTimes]) timeById.set(t.WorkTicketTimeID, t);
 
+        job.progress = "job details";
         // 5. Job details.
         const opps = await inChunks(oppIds, (ids) =>
           apiGet("/Opportunities", {
@@ -149,12 +187,14 @@ export function registerReportTool(server, rawApiGet, fail) {
         );
         const oppById = new Map(opps.map((o) => [o.OpportunityID, o]));
 
+        job.progress = "invoices";
         // 6. Invoices in the period.
         const invoices = await getAll(apiGet, "/Invoices", {
           $filter: `InvoiceDate ge ${startDate} and InvoiceDate le ${endDate}`,
           $expand: "InvoiceOpportunities($filter=OpportunityID gt 0)",
         });
 
+        job.progress = "calculating";
         // ── Math ────────────────────────────────────────────────────────────
         // Hours per ticket per route (period), and per job per route.
         const tktRoute = new Map(); // ticketId -> Map(routeId -> hours)
@@ -315,10 +355,7 @@ export function registerReportTool(server, rawApiGet, fail) {
           },
           runSeconds: Math.round((Date.now() - started) / 1000),
         };
-        return { content: [{ type: "text", text: JSON.stringify(result) }] };
-      } catch (e) {
-        return fail(e);
+        return JSON.stringify(result);
       }
-    },
-  );
+  }
 }
