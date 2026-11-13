@@ -862,6 +862,18 @@ function buildServer() {
 const app = express();
 app.use(express.json());
 
+// Log every request with its MCP method and how long it took (never logs keys).
+app.use((req, res, next) => {
+  const started = Date.now();
+  const method = req.body && req.body.method ? req.body.method : "";
+  const tool = method === "tools/call" && req.body.params ? req.body.params.name : "";
+  const path = req.path.replace(/^\/k\/[^/]+/, "/k/***");
+  res.on("finish", () => {
+    console.log(`${req.method} ${path} ${method}${tool ? " " + tool : ""} -> ${res.statusCode} in ${Date.now() - started}ms`);
+  });
+  next();
+});
+
 // Health check (for Render and monitoring)
 app.get("/health", (_req, res) => {
   res.json({ status: "ok", service: "aspire-mcp", timestamp: new Date().toISOString() });
