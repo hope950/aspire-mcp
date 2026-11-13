@@ -903,73 +903,44 @@ function requireHeaderKey(req, res, next) {
 
 const mcp = express.Router();
 
-// Session store for stateful MCP connections
-const sessions = {};
-
-// MCP endpoint — handles POST (new sessions and messages) + GET (SSE streaming) + DELETE
+// Stateless MCP endpoint. Every request gets a fresh server and transport, so
+// nothing is lost when Render restarts, redeploys, or wakes the service, and a
+// client can never get stuck holding a session ID the server has forgotten.
 mcp.post("/mcp", async (req, res) => {
-  const sessionId = req.headers["mcp-session-id"];
-
   try {
-    let transport;
-
-    if (sessionId && sessions[sessionId]) {
-      // Existing session
-      transport = sessions[sessionId];
-    } else if (!sessionId && isInitializeRequest(req.body)) {
-      // New session initialization
-      transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: () => randomUUID(),
-        onsessioninitialized: (sid) => {
-          sessions[sid] = transport;
-          console.log(`Session started: ${sid}`);
-        },
-      });
-      transport.onclose = () => {
-        if (transport.sessionId) {
-          delete sessions[transport.sessionId];
-          console.log(`Session ended: ${transport.sessionId}`);
-        }
-      };
-      const server = buildServer();
-      await server.connect(transport);
-    } else {
-      res.status(400).json({ error: "Bad request: missing session or not an initialize request" });
-      return;
-    }
-
+    const server = buildServer();
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: undefined,
+      enableJsonResponse: true,
+    });
+    res.on("close", () => {
+      transport.close();
+      server.close();
+    });
+    await server.connect(transport);
     await transport.handleRequest(req, res, req.body);
   } catch (e) {
     console.error("MCP request error:", e);
-    if (!res.headersSent) res.status(500).json({ error: e.message });
+    if (!res.headersSent) {
+      res.status(500).json({
+        jsonrpc: "2.0",
+        error: { code: -32603, message: "Internal server error" },
+        id: null,
+      });
+    }
   }
 });
 
-mcp.get("/mcp", async (req, res) => {
-  const sessionId = req.headers["mcp-session-id"];
-  if (!sessionId || !sessions[sessionId]) {
-    res.status(400).json({ error: "Invalid or missing session ID" });
-    return;
-  }
-  try {
-    await sessions[sessionId].handleRequest(req, res);
-  } catch (e) {
-    console.error("MCP GET error:", e);
-    if (!res.headersSent) res.status(500).json({ error: e.message });
-  }
-});
-
-mcp.delete("/mcp", async (req, res) => {
-  const sessionId = req.headers["mcp-session-id"];
-  if (sessionId && sessions[sessionId]) {
-    try {
-      await sessions[sessionId].close();
-    } catch {}
-    delete sessions[sessionId];
-    console.log(`Session deleted: ${sessionId}`);
-  }
-  res.status(200).end();
-});
+// Stateless mode has no standalone stream and no sessions to delete.
+const methodNotAllowed = (_req, res) => {
+  res.status(405).set("Allow", "POST").json({
+    jsonrpc: "2.0",
+    error: { code: -32000, message: "Method not allowed." },
+    id: null,
+  });
+};
+mcp.get("/mcp", methodNotAllowed);
+mcp.delete("/mcp", methodNotAllowed);
 
 // ─── SSE TRANSPORT (for mcp-remote / Claude Desktop compatibility) ───────────
 
