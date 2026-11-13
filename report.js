@@ -18,8 +18,8 @@
 import { z } from "zod";
 
 const PAGE = 500;
-const CHUNK = 40;
-const PARALLEL = 4;
+const CHUNK = 15; // Aspire rejects filters over 100 OData nodes
+const PARALLEL = 6;
 
 const round2 = (n) => Math.round((n + Number.EPSILON) * 100) / 100;
 const dateOnly = (d) => (d ? String(d).slice(0, 10) : null);
